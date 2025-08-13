@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="/Users/zidong/Desktop/claude_timer"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CFG="$ROOT/config.yaml"
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 not found" >&2; exit 1

@@ -1,5 +1,5 @@
 timezone: Europe/London
-start_time: "22:44"
+start_time: "7:00"
 sleep_time: "23:00"
 weekdays: MTWRFSU
 kickoff_prompt: "ping"

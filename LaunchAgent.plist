@@ -6,9 +6,9 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>/Users/zidong/Desktop/claude_timer/run_daemon.sh</string>
+    <string>/Users/zidong/claude_scheduler/run_daemon.sh</string>
   </array>
-  <key>WorkingDirectory</key><string>/Users/zidong/Desktop/claude_timer</string>
+  <key>WorkingDirectory</key><string>/Users/zidong/claude_scheduler</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
