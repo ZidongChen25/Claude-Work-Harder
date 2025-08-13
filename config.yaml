@@ -1,0 +1,7 @@
+timezone: Europe/London
+start_time: "22:44"
+sleep_time: "23:00"
+weekdays: MTWRFSU
+kickoff_prompt: "ping"
+use_caffeinate: true
+force_sleep_at_quiet_hours: false 
