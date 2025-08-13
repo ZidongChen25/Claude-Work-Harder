@@ -111,6 +111,7 @@ RESET_PATTERNS = [
 	re.compile(r"Time\s*to\s*Reset\s*[:\-]?\s*(\d+)\s*h\s*(\d+)?\s*m", re.I),
 ]
 
+
 def parse_reset(stdout: str, tz: ZoneInfo) -> dt.datetime | None:
 	out = strip_ansi(stdout)
 	now = dt.datetime.now(tz)
@@ -160,15 +161,29 @@ def get_next_reset(tz: ZoneInfo, backoff_start: float = 2.0, backoff_max: float 
 def ensure_caffeinate(enabled: bool) -> subprocess.Popen | None:
 	if not enabled:
 		return None
-	# Keep system away from idle sleep while this daemon runs
-	# -d (prevent idle sleep), -i (prevent display sleep), -m (prevent disk sleep), -s (AC power)
+	# Keep system away from idle sleep during active hours
 	try:
-		proc = subprocess.Popen(["caffeinate","-dimsu","-w", str(os.getpid())])
+		proc = subprocess.Popen(["caffeinate","-dimsu"])  # stop explicitly at quiet hours
 		log("caffeinate_started", {"pid": proc.pid})
 		return proc
 	except Exception as e:
 		log("caffeinate_error", {"error": str(e)})
 		return None
+
+
+def stop_caffeinate(proc: subprocess.Popen | None) -> None:
+	if not proc:
+		return
+	try:
+		if proc.poll() is None:
+			proc.terminate()
+			try:
+				proc.wait(timeout=3)
+			except Exception:
+				proc.kill()
+		log("caffeinate_stopped", {"pid": getattr(proc, "pid", None)})
+	except Exception as e:
+		log("caffeinate_stop_error", {"error": str(e)})
 
 
 def maybe_force_sleep(enabled: bool) -> None:
@@ -209,7 +224,7 @@ def daemon_loop():
 	tz = ZoneInfo(cfg.get("timezone", DEFAULT_CONFIG["timezone"]))
 	start_hm = parse_hhmm(cfg.get("start_time", DEFAULT_CONFIG["start_time"]))
 	sleep_hm = parse_hhmm(cfg.get("sleep_time", DEFAULT_CONFIG["sleep_time"]))
-	caf = ensure_caffeinate(bool(cfg.get("use_caffeinate", True)))
+	caffeinate_proc: subprocess.Popen | None = None
 	validate_pmset(cfg.get("start_time", DEFAULT_CONFIG["start_time"]))
 
 	log("daemon_started", {"cfg": cfg})
@@ -219,6 +234,9 @@ def daemon_loop():
 	while True:
 		now = dt.datetime.now(tz)
 		if not in_active_day(cfg, now):
+			# Ensure caffeinate is not running outside active days
+			stop_caffeinate(caffeinate_proc)
+			caffeinate_proc = None
 			# Sleep until next day start
 			next_start = next_daily_in_window(now, start_hm, tz)
 			log("inactive_day_wait", {"until": next_start.isoformat()})
@@ -232,6 +250,10 @@ def daemon_loop():
 			wait_until(today_start)
 			now = dt.datetime.now(tz)
 
+		# Start caffeinate for active window if enabled
+		if cfg.get("use_caffeinate", True) and (caffeinate_proc is None or caffeinate_proc.poll() is not None):
+			caffeinate_proc = ensure_caffeinate(True)
+
 		# Kickoff
 		log("kickoff", {"at": now.isoformat()})
 		send_claude(prompt, model, timeout=60)
@@ -242,6 +264,9 @@ def daemon_loop():
 			today_sleep = now.replace(hour=sleep_hm[0], minute=sleep_hm[1], second=0, microsecond=0)
 			if now >= today_sleep:
 				log("entering_quiet_hours", {"at": now.isoformat()})
+				# Stop caffeinate at quiet hours
+				stop_caffeinate(caffeinate_proc)
+				caffeinate_proc = None
 				maybe_force_sleep(bool(cfg.get("force_sleep_at_quiet_hours", False)))
 				break
 
@@ -252,7 +277,9 @@ def daemon_loop():
 			wait_until(buffered)
 			send_claude(prompt, model, timeout=60)
 
-		# After quiet hours, wait until next day's start
+		# After quiet hours, ensure caffeinate remains stopped and wait until next day's start
+		stop_caffeinate(caffeinate_proc)
+		caffeinate_proc = None
 		next_start = next_daily_in_window(dt.datetime.now(tz), start_hm, tz)
 		log("waiting_next_day", {"until": next_start.isoformat()})
 		wait_until(next_start)
