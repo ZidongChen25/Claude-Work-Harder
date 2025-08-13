@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
 	"kickoff_prompt": "ping",
 	"use_caffeinate": True,
 	"force_sleep_at_quiet_hours": False,
+	"pre_caffeinate_minutes": 2,
 }
 
 WEEKDAY_MAP = {
@@ -224,6 +225,7 @@ def daemon_loop():
 	tz = ZoneInfo(cfg.get("timezone", DEFAULT_CONFIG["timezone"]))
 	start_hm = parse_hhmm(cfg.get("start_time", DEFAULT_CONFIG["start_time"]))
 	sleep_hm = parse_hhmm(cfg.get("sleep_time", DEFAULT_CONFIG["sleep_time"]))
+	pre_min = int(cfg.get("pre_caffeinate_minutes", DEFAULT_CONFIG["pre_caffeinate_minutes"]))
 	caffeinate_proc: subprocess.Popen | None = None
 	validate_pmset(cfg.get("start_time", DEFAULT_CONFIG["start_time"]))
 
@@ -243,14 +245,25 @@ def daemon_loop():
 			wait_until(next_start)
 			continue
 
-		# Wait for start_time for today (if past, run immediately)
+		# Compute today's times
 		today_start = now.replace(hour=start_hm[0], minute=start_hm[1], second=0, microsecond=0)
+		pre_start = today_start - dt.timedelta(minutes=max(0, pre_min))
+
+		# If before start_time, pre-start caffeinate N minutes earlier
 		if now < today_start:
+			if cfg.get("use_caffeinate", True):
+				if now < pre_start:
+					log("waiting_for_pre_start", {"until": pre_start.isoformat()})
+					wait_until(pre_start)
+					now = dt.datetime.now(tz)
+				# Start caffeinate if not already
+				if caffeinate_proc is None or caffeinate_proc.poll() is not None:
+					caffeinate_proc = ensure_caffeinate(True)
 			log("waiting_for_start", {"until": today_start.isoformat()})
 			wait_until(today_start)
 			now = dt.datetime.now(tz)
 
-		# Start caffeinate for active window if enabled
+		# Start caffeinate for active window if enabled (in case not started earlier)
 		if cfg.get("use_caffeinate", True) and (caffeinate_proc is None or caffeinate_proc.poll() is not None):
 			caffeinate_proc = ensure_caffeinate(True)
 
