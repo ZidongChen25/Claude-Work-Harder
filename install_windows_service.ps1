@@ -26,12 +26,17 @@ function Install-ClaudeScheduler {
     # Create a scheduled task that runs at startup and keeps running
     $Action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$BatchFile`""
     $Trigger = New-ScheduledTaskTrigger -AtStartup
-    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartOnFailure -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
     $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
     
     # Register the task
     try {
         Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force
+        
+        # Configure restart settings using schtasks.exe for better compatibility
+        Write-Host "Configuring restart settings..." -ForegroundColor Yellow
+        & schtasks.exe /change /tn $TaskName /rl HIGHEST /ri 1 /et 00:00:00 2>$null
+        
         Write-Host "Claude Scheduler task installed successfully!" -ForegroundColor Green
         Write-Host "Task Name: $TaskName" -ForegroundColor Yellow
         Write-Host "You can manage it through Task Scheduler or with this script." -ForegroundColor Yellow
@@ -94,8 +99,24 @@ function Show-Status {
 }
 
 # Main execution
+# Show help without requiring admin privileges
+if ($Action.ToLower() -eq "help" -or $Action.ToLower() -eq "--help" -or $Action.ToLower() -eq "-h") {
+    Write-Host "Usage: .\install_windows_service.ps1 -Action [install|uninstall|start|stop|restart|status]" -ForegroundColor Cyan
+    Write-Host "Example: .\install_windows_service.ps1 -Action install" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Actions:" -ForegroundColor Green
+    Write-Host "  install   - Install Claude Scheduler as Windows Task"
+    Write-Host "  uninstall - Remove Claude Scheduler task"
+    Write-Host "  start     - Start the scheduled task"
+    Write-Host "  stop      - Stop the scheduled task"
+    Write-Host "  restart   - Stop and start the task"
+    Write-Host "  status    - Show task status"
+    exit 0
+}
+
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
     Write-Error "This script must be run as Administrator!"
+    Write-Host "Try: Right-click PowerShell -> 'Run as Administrator', then run this script" -ForegroundColor Yellow
     exit 1
 }
 
@@ -111,7 +132,7 @@ switch ($Action.ToLower()) {
         Start-ClaudeScheduler
     }
     default {
-        Write-Host "Usage: .\install_windows_service.ps1 -Action [install|uninstall|start|stop|restart|status]" -ForegroundColor Cyan
-        Write-Host "Example: .\install_windows_service.ps1 -Action install" -ForegroundColor Yellow
+        Write-Host "Unknown action: $Action" -ForegroundColor Red
+        Write-Host "Use -Action help for available commands" -ForegroundColor Yellow
     }
 }

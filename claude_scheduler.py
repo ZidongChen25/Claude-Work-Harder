@@ -96,14 +96,41 @@ def in_active_day(cfg: dict, now_local: dt.datetime) -> bool:
 
 def run_cmd(cmd: list[str], timeout: int = 60) -> tuple[int, str, str]:
 	try:
-		res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-		return res.returncode, res.stdout, res.stderr
+		# On Windows, try multiple encodings to handle different command outputs
+		if IS_WINDOWS:
+			# Try common Windows encodings: cp936 (Chinese), gbk, utf-8
+			encodings_to_try = ['cp936', 'gbk', 'utf-8', 'latin1']
+			
+			for encoding in encodings_to_try:
+				try:
+					res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding=encoding, errors='replace')
+					# If we get here without exception, the encoding worked
+					return res.returncode, res.stdout, res.stderr
+				except (UnicodeDecodeError, LookupError):
+					continue
+			
+			# If all encodings fail, fall back to bytes and decode with replacement
+			res = subprocess.run(cmd, capture_output=True, timeout=timeout)
+			stdout = res.stdout.decode('utf-8', errors='replace') if res.stdout else ''
+			stderr = res.stderr.decode('utf-8', errors='replace') if res.stderr else ''
+			return res.returncode, stdout, stderr
+		else:
+			res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+			return res.returncode, res.stdout, res.stderr
 	except Exception as e:
 		return 1, "", str(e)
 
 
 def send_claude(prompt: str, model: str | None, timeout: int = 60) -> bool:
-	cmd = ["claude", "-p", prompt, "--output-format", "json"]
+	# On Windows, use full path to ensure claude is found in scheduled task environment
+	if IS_WINDOWS:
+		claude_path = os.path.expanduser(r"~\AppData\Roaming\npm\claude.cmd")
+		if not os.path.exists(claude_path):
+			claude_path = "claude"  # Fall back to PATH if full path doesn't exist
+	else:
+		claude_path = "claude"
+	
+	cmd = [claude_path, "-p", prompt, "--output-format", "json"]
 	# If model is provided and not "default", pass it through; else rely on CLI default
 	if model and model.strip().lower() != "default":
 		cmd += ["--model", model]
@@ -158,7 +185,25 @@ def get_next_reset(tz: ZoneInfo, backoff_start: float = 2.0, backoff_max: float 
 	while True:
 		# Platform-specific command execution
 		if IS_WINDOWS:
-			rc, out, err = run_cmd(["claude-monitor", "--clear"], timeout=20)
+			# Try multiple possible locations for claude-monitor on Windows
+			claude_monitor_paths = [
+				os.path.expanduser(r"~\miniconda3\Scripts\claude-monitor.exe"),
+				os.path.expanduser(r"~\.local\bin\claude-monitor.exe"),
+				"claude-monitor"  # Fall back to PATH
+			]
+			
+			rc, out, err = None, "", ""
+			for monitor_path in claude_monitor_paths:
+				try:
+					if monitor_path != "claude-monitor" and not os.path.exists(monitor_path):
+						continue
+					rc, out, err = run_cmd([monitor_path, "--clear"], timeout=20)
+					break
+				except Exception as e:
+					continue
+			
+			if rc is None:  # All paths failed
+				rc, out, err = run_cmd(["claude-monitor", "--clear"], timeout=20)
 		else:
 			# macOS/Linux implementation
 			rc, out, err = run_cmd(["bash","-lc","claude-monitor --clear"], timeout=20)
