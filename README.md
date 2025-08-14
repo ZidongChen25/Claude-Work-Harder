@@ -1,20 +1,32 @@
 ## Claude Scheduler (Headless) – Setup and Usage
 
 This project runs a daily headless scheduler that:
-- Wakes your Mac shortly before a configured start time
+- Wakes your system shortly before a configured start time
 - Sends a tiny kickoff message to Claude CLI
 - Reads the next reset from claude-monitor
-- Sleeps until that reset and “re-primes” (sends the tiny message again)
+- Sleeps until that reset and "re-primes" (sends the tiny message again)
 - Repeats until sleep time, then optionally forces system sleep
 
-It runs as a macOS LaunchAgent and logs to `~/Library/Logs/claude-scheduler.log`.
+**Platform Support:**
+- **macOS**: Runs as a LaunchAgent and logs to `~/Library/Logs/claude-scheduler.log`
+- **Windows**: Runs as a Scheduled Task and logs to `%USERPROFILE%\AppData\Local\claude-scheduler.log`
 
 ### Prerequisites
+
+**For macOS:**
 - macOS with admin access (for `pmset`)
 - Installed tools:
   - Claude CLI
   - claude-monitor
   - Python 3.10+ (no extra Python packages required)
+
+**For Windows:**
+- Windows 10/11 with admin access (for Task Scheduler and power management)
+- Installed tools:
+  - Claude CLI
+  - claude-monitor
+  - Python 3.10+ (no extra Python packages required)
+  - PowerShell 5.1+ (usually pre-installed)
 
 Note: You can use a virtualenv/conda if you prefer, but LaunchAgent `ProgramArguments` points to `/usr/bin/python3`. For simplicity and reliability with LaunchAgent, using the system Python is recommended. If you must use venv/conda, adjust the LaunchAgent to call that interpreter path.
 
@@ -41,7 +53,7 @@ Confirm CLI tools:
 ```bash
 claude --version
 claude doctor | cat
-claude -p "ping" --model claude-3-7-sonnet --output-format json | cat
+claude -p "ping" --output-format json | cat
 claude-monitor --clear | head -n 50 | cat
 ```
 
@@ -59,7 +71,6 @@ timezone: Europe/London
 start_time: "06:00"
 sleep_time: "23:00"
 weekdays: MTWRFSU
-model: claude-3-7-sonnet
 kickoff_prompt: "ping"
 use_caffeinate: true
 force_sleep_at_quiet_hours: false
@@ -137,8 +148,92 @@ pmset -g sched
 - Permissions / PATH:
   - The LaunchAgent sets PATH to `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`. Ensure `claude` and `claude-monitor` live in one of these.
 
+---
+
+## Windows Setup Instructions
+
+### 1) Configure
+Edit `config.yaml` in the project directory:
+```yaml
+timezone: America/New_York  # Or your local timezone
+start_time: "06:00"
+sleep_time: "23:00"
+weekdays: MTWRFSU
+model: claude-3-7-sonnet
+kickoff_prompt: "ping"
+use_caffeinate: true
+force_sleep_at_quiet_hours: false
+```
+
+### 2) Schedule Daily Wake (one-time)
+**Run PowerShell as Administrator** and execute:
+```powershell
+cd "C:\path\to\your\Make_Claude_Hard_Working"
+.\bin\schedule_wake.ps1
+```
+This creates a Windows Task Scheduler task to wake the system ~2 minutes before `start_time`.
+
+Verify the wake task was created:
+```powershell
+Get-ScheduledTask -TaskName "ClaudeSchedulerWake"
+```
+
+### 3) Install Service
+**Run PowerShell as Administrator** and execute:
+```powershell
+cd "C:\path\to\your\Make_Claude_Hard_Working"
+.\install_windows_service.ps1 -Action install
+```
+
+Start the service:
+```powershell
+.\install_windows_service.ps1 -Action start
+```
+
+### 4) Monitor and Control
+Check service status:
+```powershell
+.\install_windows_service.ps1 -Action status
+```
+
+View logs:
+```powershell
+Get-Content "$env:USERPROFILE\AppData\Local\claude-scheduler.log" -Tail 20 -Wait
+```
+
+Stop the service:
+```powershell
+.\install_windows_service.ps1 -Action stop
+```
+
+Restart the service:
+```powershell
+.\install_windows_service.ps1 -Action restart
+```
+
+Uninstall the service:
+```powershell
+.\install_windows_service.ps1 -Action uninstall
+```
+
+### Windows Power Management Notes
+- **Wake functionality** depends on system power settings and hardware support
+- **Hibernation** is used instead of sleep when `force_sleep_at_quiet_hours: true`
+- **Power requests** prevent system idle sleep during active hours
+- For best results, ensure "Allow wake timers" is enabled in Power Options
+
+### Windows Troubleshooting
+- **No wake at start_time**: Check if wake task exists with `Get-ScheduledTask -TaskName "ClaudeSchedulerWake"`
+- **Service not starting**: Run `.\install_windows_service.ps1 -Action status` to check task state
+- **Claude/claude-monitor not found**: Ensure they're in your system PATH
+- **Logs not updating**: Check that Python can write to `%USERPROFILE%\AppData\Local\`
+
+---
+
 ### Quick Test (same day)
 - Temporarily set `start_time` a few minutes ahead of now in `config.yaml`.
+
+**macOS:**
 - Re-run wake script (if you want a scheduled wake):
 ```bash
 sudo /Users/zidong/Desktop/claude_timer/bin/schedule_wake.sh
@@ -148,5 +243,16 @@ sudo /Users/zidong/Desktop/claude_timer/bin/schedule_wake.sh
 launchctl stop com.zidong.claude-scheduler
 launchctl start com.zidong.claude-scheduler
 ```
+
+**Windows (run as Administrator):**
+- Re-run wake script (if you want a scheduled wake):
+```powershell
+.\bin\schedule_wake.ps1
+```
+- Restart service to reload config:
+```powershell
+.\install_windows_service.ps1 -Action restart
+```
+
 - Watch the log for `kickoff`, `monitor_parse`, `sleep_until_reset`, and the next primer send.
 

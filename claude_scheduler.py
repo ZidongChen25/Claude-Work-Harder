@@ -7,6 +7,7 @@ import sys
 import json
 import signal
 import re
+import platform
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,9 +17,19 @@ except Exception as e:
 	print("PyYAML not installed. Please add 'PyYAML' to requirements and install.", file=sys.stderr)
 	yaml = None
 
-APP_ROOT = Path("/Users/zidong/Desktop/claude_timer").resolve()
-CONFIG_PATH = APP_ROOT / "config.yaml"
-LOG_PATH = Path.home() / "Library/Logs/claude-scheduler.log"
+# Platform detection
+IS_WINDOWS = platform.system() == "Windows"
+IS_MACOS = platform.system() == "Darwin"
+
+# Platform-specific paths
+if IS_WINDOWS:
+	APP_ROOT = Path(__file__).parent.resolve()
+	CONFIG_PATH = APP_ROOT / "config.yaml"
+	LOG_PATH = Path.home() / "AppData/Local/claude-scheduler.log"
+else:
+	APP_ROOT = Path("/Users/zidong/Desktop/claude_timer").resolve()
+	CONFIG_PATH = APP_ROOT / "config.yaml"
+	LOG_PATH = Path.home() / "Library/Logs/claude-scheduler.log"
 
 DEFAULT_CONFIG = {
 	"timezone": "Europe/London",
@@ -145,8 +156,13 @@ def get_next_reset(tz: ZoneInfo, backoff_start: float = 2.0, backoff_max: float 
 	"""Runs claude-monitor and parses the next reset. Falls back to now+5h."""
 	sleep_s = backoff_start
 	while True:
-		# Prefer a quick single-shot run
-		rc, out, err = run_cmd(["bash","-lc","claude-monitor --clear"], timeout=20)
+		# Platform-specific command execution
+		if IS_WINDOWS:
+			rc, out, err = run_cmd(["claude-monitor", "--clear"], timeout=20)
+		else:
+			# macOS/Linux implementation
+			rc, out, err = run_cmd(["bash","-lc","claude-monitor --clear"], timeout=20)
+		
 		combined = out or err
 		parsed = parse_reset(combined, tz)
 		log("monitor_parse", {"rc": rc, "parsed": parsed.isoformat() if parsed else None, "snippet": strip_ansi(combined)[-1200:]})
@@ -162,17 +178,38 @@ def get_next_reset(tz: ZoneInfo, backoff_start: float = 2.0, backoff_max: float 
 def ensure_caffeinate(enabled: bool) -> subprocess.Popen | None:
 	if not enabled:
 		return None
-	# Keep system away from idle sleep during active hours
+	
+	if IS_WINDOWS:
+		return ensure_caffeinate_windows(enabled)
+	else:
+		# macOS implementation
+		try:
+			proc = subprocess.Popen(["caffeinate","-dimsu"])  # stop explicitly at quiet hours
+			log("caffeinate_started", {"pid": proc.pid})
+			return proc
+		except Exception as e:
+			log("caffeinate_error", {"error": str(e)})
+			return None
+
+def ensure_caffeinate_windows(enabled: bool) -> subprocess.Popen | None:
+	if not enabled:
+		return None
+	# Windows: Use powercfg to prevent system sleep
 	try:
-		proc = subprocess.Popen(["caffeinate","-dimsu"])  # stop explicitly at quiet hours
-		log("caffeinate_started", {"pid": proc.pid})
-		return proc
+		# Create a power request to prevent system idle sleep
+		subprocess.run(["powercfg", "/requestsoverride", "PROCESS", "python.exe", "SYSTEM"], check=True)
+		log("windows_caffeinate_started", {"method": "powercfg_requestsoverride"})
+		return None  # Windows doesn't return a process like macOS
 	except Exception as e:
-		log("caffeinate_error", {"error": str(e)})
+		log("windows_caffeinate_error", {"error": str(e)})
 		return None
 
 
 def stop_caffeinate(proc: subprocess.Popen | None) -> None:
+	if IS_WINDOWS:
+		stop_caffeinate_windows()
+		return
+	
 	if not proc:
 		return
 	try:
@@ -186,21 +223,57 @@ def stop_caffeinate(proc: subprocess.Popen | None) -> None:
 	except Exception as e:
 		log("caffeinate_stop_error", {"error": str(e)})
 
+def stop_caffeinate_windows() -> None:
+	try:
+		# Remove the power request override
+		subprocess.run(["powercfg", "/requestsoverride", "PROCESS", "python.exe"], check=True)
+		log("windows_caffeinate_stopped", {"method": "powercfg_requestsoverride_removed"})
+	except Exception as e:
+		log("windows_caffeinate_stop_error", {"error": str(e)})
+
 
 def maybe_force_sleep(enabled: bool) -> None:
 	if not enabled:
 		return
+	
+	if IS_WINDOWS:
+		maybe_force_sleep_windows(enabled)
+	else:
+		# macOS implementation
+		try:
+			rc, out, err = run_cmd(["sudo","pmset","sleepnow"], timeout=5)
+			log("pmset_sleepnow", {"rc": rc, "stdout": out, "stderr": err})
+		except Exception as e:
+			log("pmset_sleep_error", {"error": str(e)})
+
+def maybe_force_sleep_windows(enabled: bool) -> None:
+	if not enabled:
+		return
 	try:
-		rc, out, err = run_cmd(["sudo","pmset","sleepnow"], timeout=5)
-		log("pmset_sleepnow", {"rc": rc, "stdout": out, "stderr": err})
+		# Use Windows shutdown command to hibernate (closest to macOS sleep)
+		rc, out, err = run_cmd(["shutdown", "/h"], timeout=5)
+		log("windows_hibernate", {"rc": rc, "stdout": out, "stderr": err})
 	except Exception as e:
-		log("pmset_sleep_error", {"error": str(e)})
+		log("windows_sleep_error", {"error": str(e)})
 
 
 def validate_pmset(expected_time: str) -> None:
-	rc, out, err = run_cmd(["pmset","-g","sched"], timeout=5)
-	ok = expected_time in (out or "")
-	log("pmset_sched", {"rc": rc, "ok": ok, "snippet": (out or err)[-1200:]})
+	if IS_WINDOWS:
+		validate_windows_schedule(expected_time)
+	else:
+		# macOS implementation
+		rc, out, err = run_cmd(["pmset","-g","sched"], timeout=5)
+		ok = expected_time in (out or "")
+		log("pmset_sched", {"rc": rc, "ok": ok, "snippet": (out or err)[-1200:]})
+
+def validate_windows_schedule(expected_time: str) -> None:
+	try:
+		# Check Windows Task Scheduler for our wake task
+		rc, out, err = run_cmd(["schtasks", "/query", "/tn", "ClaudeSchedulerWake", "/fo", "LIST"], timeout=5)
+		ok = expected_time in (out or "")
+		log("windows_sched", {"rc": rc, "ok": ok, "snippet": (out or err)[-1200:]})
+	except Exception as e:
+		log("windows_sched_error", {"error": str(e)})
 
 
 def wait_until(target: dt.datetime) -> None:
