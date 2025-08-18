@@ -27,7 +27,9 @@ if IS_WINDOWS:
 	CONFIG_PATH = APP_ROOT / "config.yaml"
 	LOG_PATH = Path.home() / "AppData/Local/claude-scheduler.log"
 else:
-	APP_ROOT = Path("/Users/zidong/Desktop/claude_timer").resolve()
+	# Avoid hardcoded user-specific paths. Allow override via environment
+	# variable CLAUDE_SCHEDULER_ROOT, otherwise use the script directory.
+	APP_ROOT = Path(os.environ.get("CLAUDE_SCHEDULER_ROOT", Path(__file__).parent)).resolve()
 	CONFIG_PATH = APP_ROOT / "config.yaml"
 	LOG_PATH = Path.home() / "Library/Logs/claude-scheduler.log"
 
